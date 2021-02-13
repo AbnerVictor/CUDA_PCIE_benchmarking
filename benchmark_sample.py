@@ -9,7 +9,8 @@ import numpy
 import math
 import time
 
-TPB = 32 # Threads per block, or blockDim
+TPB = 32 # Threads per block per dim, or blockDim.x
+BPG = 42 # Blocks per grid per dim, or gridDim.x
 
 @numba.jit(nopython=True)
 def matmul_cpu(A, B, C):
@@ -57,8 +58,9 @@ if __name__ == '__main__':
     print(cuda.gpus)
     cuda.select_device(0)
 
-    A = numpy.full((TPB * 130, TPB * 130), 3, numpy.float)
-    B = numpy.full((TPB * 130, TPB * 130), 4, numpy.float)
+
+    A = numpy.full((TPB * BPG, TPB * BPG), 3, numpy.float)
+    B = numpy.full((TPB * BPG, TPB * BPG), 4, numpy.float)
     C_cpu = numpy.full((A.shape[0], B.shape[1]), 0, numpy.float)
 
     # print("start processing in CPU")
@@ -76,9 +78,12 @@ if __name__ == '__main__':
     C_shared_mem = cuda.device_array((A.shape[0], B.shape[1]))
 
     threads_per_block = (TPB, TPB) # initialize a 2D block of shape (TPB, TPB), threads count = TPB*TPB
+
     blocks_per_grid_x = int(math.ceil(A.shape[0] / threads_per_block[0]))
+    # blocks per grid should be defined according to TPB and the workload of the specific task
     blocks_per_grid_y = int(math.ceil(B.shape[1] / threads_per_block[1]))
     blocks_per_grid = (blocks_per_grid_x, blocks_per_grid_y)
+    # init a 2D grid of shape (blocks_per_grid_x, blocks_per_grid_y)
 
     print("start processing in GPU")
     start_gpu = time.time()
