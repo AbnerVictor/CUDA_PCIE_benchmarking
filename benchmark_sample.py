@@ -63,12 +63,12 @@ if __name__ == '__main__':
     B = numpy.full((TPB * BPG, TPB * BPG), 4, numpy.float)
     C_cpu = numpy.full((A.shape[0], B.shape[1]), 0, numpy.float)
 
-    # print("start processing in CPU")
-    # start_cpu = time.time()
-    # matmul_cpu(A, B, C_cpu)
-    # end_cpu = time.time()
-    # time_cpu = end_cpu - start_cpu
-    # print("CPU time: " + str(time_cpu))
+    print("start processing in CPU")
+    start_cpu = time.time()
+    matmul_cpu(A, B, C_cpu)
+    end_cpu = time.time()
+    time_cpu = end_cpu - start_cpu
+    print("CPU time: " + str(time_cpu))
 
     # start in GPU
     A_global_mem = cuda.to_device(A)
