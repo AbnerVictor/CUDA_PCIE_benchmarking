@@ -5,26 +5,10 @@ import matplotlib.pyplot as plt
 import numba
 import numpy
 import time
-from pynvml import *
 
-print("=================== GPU basic info ====================")
-
-nvmlInit()  # 初始化
-print("Driver: ", nvmlSystemGetDriverVersion())  # 显示驱动信息
-
-# 查看设备
-deviceCount = nvmlDeviceGetCount()
-for i in range(deviceCount):
-    handle = nvmlDeviceGetHandleByIndex(i)
-    print("GPU", i, ":", nvmlDeviceGetName(handle))
+######################################## PARAMETERS ############################################
 
 gpu_device_selected = 0
-handle = nvmlDeviceGetHandleByIndex(gpu_device_selected)  # select gpu
-
-print('Current link: pcie gen', nvmlDeviceGetCurrPcieLinkGeneration(handle), 'x',
-      nvmlDeviceGetCurrPcieLinkWidth(handle))
-
-SM = 1  # number of SM your GPU equipped with
 
 target_FPS = 300
 
@@ -34,8 +18,18 @@ developMaximum = -0.125 - (sharpness_pref * (0.2 - 0.125))
 
 RUN_SINGLE_CPU = False
 RUN_SINGLE_GPU = False
+
 RUN_CONTINUOUS_GPU_SINGLE_STREAM = True
-RUN_CONTINUOUS_GPU_MULTI_STREAM = True
+
+RUN_CONTINUOUS_GPU_MULTI_STREAM = False
+number_of_streams = 10 # takes up more VRAM
+
+ENABLE_CONTINUOUS_HOST_2_DEVICE = True
+
+ENABLE_CONTINUOUS_DEVICE_2_HOST = False
+
+######################################## PARAMETERS ############################################
+
 
 @numba.jit(nopython=True)
 def cas_img_cpu(INPUT: numpy.ndarray, OUT: numpy.ndarray):
@@ -84,19 +78,17 @@ def cas_img_gpu(INPUT: numpy.ndarray, OUT: numpy.ndarray, _developMaximum):
 
 print("\n=================== task info ====================")
 
-img = numpy.ascontiguousarray(numpy.array(Image.open('test_img_HD.png'))[:, :, :3])
+img = numpy.ascontiguousarray(numpy.array(Image.open('test_img_UHD.png'))[:, :, :3])
+IN = img / 255.0  # normalize the image, float64 now
 
-print('read texture:', img.shape, img.dtype)
-
-h, w, d = img.shape
-MegaBytes_per_frame = h * w * d / (1024 * 1024)
+h, w, d = IN.shape
 
 TPB = (32, 32)  # threads per warp, strongly depends on gpu architecture
 BPG = (int(numpy.ceil(h / TPB[0])), int(numpy.ceil(w / TPB[1])))
 
+print('read texture:', IN.shape, IN.dtype)
 
-IN = img / 255.0  # normalize the image
-
+MegaBytes_per_frame = h * w * d * 64 / (8 * 1024 * 1024)
 print(MegaBytes_per_frame, 'MB of data per raw frame')
 # print(MegaBytes_per_frame * target_FPS, 'MB of data per second')
 
@@ -122,9 +114,6 @@ if RUN_SINGLE_GPU:
     # Starting in GPU
     cuda.select_device(gpu_device_selected)
 
-    vram_info = nvmlDeviceGetMemoryInfo(handle)
-    print('VRAM usage: ', vram_info.used / (1024 * 1024), 'MB')
-
     # host to device copy
     copy_host_2_device_start = time.time()
     IN_global_mem = cuda.to_device(IN)  # texture
@@ -135,8 +124,6 @@ if RUN_SINGLE_GPU:
 
     print('host to device copy time:', copy_host_2_device_end - copy_host_2_device_start)
 
-    vram_info = nvmlDeviceGetMemoryInfo(handle)
-    print('VRAM usage: ', vram_info.used / (1024 * 1024), 'MB')
 
     cas_img_gpu[BPG, TPB](IN_global_mem, OUT_global_mem, devMax_global_mem)
     cuda.synchronize()
@@ -148,20 +135,21 @@ if RUN_SINGLE_GPU:
     print('GPU single image CAS time:', gpu_cas_end - gpu_cas_start)
 
     copy_device_2_host_start = time.time()
-    OUT_global_gpu = OUT_global_mem.copy_to_host()
-    OUT_global_gpu = numpy.where(OUT_global_gpu < 1, numpy.where(OUT_global_gpu > 0, OUT_global_gpu, 0.0), 1.0)
+    OUT_gpu = OUT_global_mem.copy_to_host()
     copy_device_2_host_end = time.time()
+
+    OUT_gpu = numpy.where(OUT_gpu < 1, numpy.where(OUT_gpu > 0, OUT_gpu, 0.0), 1.0)
     print('host to device copy time:', copy_device_2_host_end - copy_device_2_host_start)
 
-    plt.imshow(OUT_global_gpu)
+    plt.imshow(OUT_gpu)
     plt.show()
-    mpimg.imsave('OUT_gpu.png', OUT_global_gpu)
+    mpimg.imsave('OUT_gpu.png', OUT_gpu)
 
 if RUN_CONTINUOUS_GPU_SINGLE_STREAM:
 
     print("\n=================== Continuous run, single stream ====================")
 
-    # IN_global_mem = cuda.to_device(IN)  # texture
+    IN_global_mem = cuda.to_device(IN)  # texture
     devMax_global_mem = cuda.to_device(numpy.array([developMaximum]))
     OUT_global_mem = cuda.device_array((h, w, d), dtype=float)
 
@@ -181,14 +169,61 @@ if RUN_CONTINUOUS_GPU_SINGLE_STREAM:
                 print('\rFPS:', fps, end='')
                 fps = 0
 
-            IN_global_mem = cuda.to_device(IN)  # texture
+            if ENABLE_CONTINUOUS_HOST_2_DEVICE:
+                IN_global_mem = cuda.to_device(IN)  # texture
+
             cas_img_gpu[BPG, TPB](IN_global_mem, OUT_global_mem, devMax_global_mem)
+
+            if ENABLE_CONTINUOUS_DEVICE_2_HOST:
+                OUT_gpu = OUT_global_mem.copy_to_host()
             cuda.synchronize()
     except KeyboardInterrupt:
         pass
 
 if RUN_CONTINUOUS_GPU_MULTI_STREAM:
+    print("\n=================== Continuous run, multi stream ====================")
 
-    pass
+    stream_list = [numba.cuda.stream() for i in range(0, number_of_streams)]
+    # print(stream_list)
+    IN_global_mem_list = []
+    devMax_global_mem_list = []
+    OUT_global_mem_list = []
 
-nvmlShutdown()
+    for i in range(0, number_of_streams):
+        # Host to device
+        IN_global_mem_list += [cuda.to_device(IN, stream=stream_list[i])]
+        devMax_global_mem_list += [cuda.to_device(numpy.array([developMaximum]), stream=stream_list[i])]
+        OUT_global_mem_list += [cuda.device_array((h, w, d), stream=stream_list[i], dtype=float)]
+
+    fps = 0
+    last_time = time.time()
+
+    try:
+        while 1:
+            current_time = time.time()
+            if current_time - last_time < 1.0:
+                if fps >= target_FPS:
+                    continue
+                fps += 1
+            else:
+                last_time = current_time
+                print('\rFPS:', fps*number_of_streams, end='')
+                fps = 0
+
+            for i in range(0, number_of_streams):
+                # Host to device
+                if ENABLE_CONTINUOUS_HOST_2_DEVICE:
+                    IN_global_mem_list[i] = cuda.to_device(IN, stream=stream_list[i])
+
+                # Kernel
+                cas_img_gpu[BPG, TPB, stream_list[i]](IN_global_mem_list[i], OUT_global_mem_list[i], devMax_global_mem_list[i])
+
+                # Device to host
+                if ENABLE_CONTINUOUS_DEVICE_2_HOST:
+                    OUT_gpu = OUT_global_mem_list[i].copy_to_host()
+            cuda.synchronize()
+
+    except KeyboardInterrupt:
+        pass
+
+
