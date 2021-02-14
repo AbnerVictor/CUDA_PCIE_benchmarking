@@ -10,7 +10,9 @@ import time
 
 gpu_device_selected = 0
 
-target_FPS = 300
+target_FPS = 600
+
+input_img = 'test_img_SD.png'
 
 # CAS parameters
 sharpness_pref = 0.8
@@ -24,7 +26,7 @@ RUN_CONTINUOUS_GPU_SINGLE_STREAM = True
 RUN_CONTINUOUS_GPU_MULTI_STREAM = False
 number_of_streams = 10 # takes up more VRAM
 
-ENABLE_CONTINUOUS_HOST_2_DEVICE = True
+ENABLE_CONTINUOUS_HOST_2_DEVICE = False
 
 ENABLE_CONTINUOUS_DEVICE_2_HOST = False
 
@@ -76,9 +78,11 @@ def cas_img_gpu(INPUT: numpy.ndarray, OUT: numpy.ndarray, _developMaximum):
                                INPUT[row + 1, col, 2], INPUT[row, col, 2])
 
 
+######################################## WORK ############################################
+
 print("\n=================== task info ====================")
 
-img = numpy.ascontiguousarray(numpy.array(Image.open('test_img_UHD.png'))[:, :, :3])
+img = numpy.ascontiguousarray(numpy.array(Image.open(input_img))[:, :, :3])
 IN = img / 255.0  # normalize the image, float64 now
 
 h, w, d = IN.shape
