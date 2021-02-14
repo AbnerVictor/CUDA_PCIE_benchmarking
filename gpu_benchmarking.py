@@ -4,7 +4,6 @@ import matplotlib.image as mpimg
 import matplotlib.pyplot as plt
 import numba
 import numpy
-import math
 import time
 from pynvml import *
 
@@ -35,7 +34,8 @@ developMaximum = -0.125 - (sharpness_pref * (0.2 - 0.125))
 
 RUN_SINGLE_CPU = False
 RUN_SINGLE_GPU = False
-RUN_CONTINUOUS_GPU = True
+RUN_CONTINUOUS_GPU_SINGLE_STREAM = True
+RUN_CONTINUOUS_GPU_MULTI_STREAM = True
 
 @numba.jit(nopython=True)
 def cas_img_cpu(INPUT: numpy.ndarray, OUT: numpy.ndarray):
@@ -52,11 +52,8 @@ def cas_img_cpu(INPUT: numpy.ndarray, OUT: numpy.ndarray):
             else:
                 BAS = min_g / max_g
             _w = BAS ** 0.5 * developMaximum
-            OUT[row, col, :] = (_w * (window[0, 1, :] + window[1, 0, :] + window[1, 2, :] + window[2, 1, :]) + window[1,
-                                                                                                               1,
-                                                                                                               :]) / (
-                                           _w * 4 + 1)
-
+            OUT[row, col, :] = (_w * (window[0, 1, :] + window[1, 0, :] + window[1, 2, :] + window[2, 1, :]) + window[1, 1, :]) \
+                               / (_w * 4 + 1)
 
 @cuda.jit()
 def cas_img_gpu(INPUT: numpy.ndarray, OUT: numpy.ndarray, _developMaximum):
@@ -101,7 +98,7 @@ BPG = (int(numpy.ceil(h / TPB[0])), int(numpy.ceil(w / TPB[1])))
 IN = img / 255.0  # normalize the image
 
 print(MegaBytes_per_frame, 'MB of data per raw frame')
-print(MegaBytes_per_frame * target_FPS, 'MB of data per second')
+# print(MegaBytes_per_frame * target_FPS, 'MB of data per second')
 
 
 if RUN_SINGLE_CPU:
@@ -160,31 +157,38 @@ if RUN_SINGLE_GPU:
     plt.show()
     mpimg.imsave('OUT_gpu.png', OUT_global_gpu)
 
-if RUN_CONTINUOUS_GPU:
+if RUN_CONTINUOUS_GPU_SINGLE_STREAM:
 
-    print("\n=================== Continuous Run ====================")
+    print("\n=================== Continuous run, single stream ====================")
 
-    IN_global_mem = cuda.to_device(IN)  # texture
+    # IN_global_mem = cuda.to_device(IN)  # texture
     devMax_global_mem = cuda.to_device(numpy.array([developMaximum]))
-
     OUT_global_mem = cuda.device_array((h, w, d), dtype=float)
 
     fps = 0
     last_time = time.time()
 
     # Rendering
-    while 1:
-        current_time = time.time()
-        if current_time - last_time < 1:
-            if fps >= target_FPS:
-                continue
-            fps += 1
-        else:
-            last_time = current_time
-            print('\rFPS:', fps, end='')
-            fps = 0
-        cas_img_gpu[BPG, TPB](IN_global_mem, OUT_global_mem, devMax_global_mem)
-        cuda.synchronize()
-        # OUT_global_mem.copy_to_host()
+    try:
+        while 1:
+            current_time = time.time()
+            if current_time - last_time < 1:
+                if fps >= target_FPS:
+                    continue
+                fps += 1
+            else:
+                last_time = current_time
+                print('\rFPS:', fps, end='')
+                fps = 0
+
+            IN_global_mem = cuda.to_device(IN)  # texture
+            cas_img_gpu[BPG, TPB](IN_global_mem, OUT_global_mem, devMax_global_mem)
+            cuda.synchronize()
+    except KeyboardInterrupt:
+        pass
+
+if RUN_CONTINUOUS_GPU_MULTI_STREAM:
+
+    pass
 
 nvmlShutdown()
