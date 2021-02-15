@@ -48,6 +48,9 @@ def vram_monitor():
     vram_info = nvmlDeviceGetMemoryInfo(handle)
     print('VRAM usage: ', vram_info.used / (1024 * 1024), 'MB')
 
+def usage_monitor():
+    usage_info = nvmlDeviceGetUtilizationRates(handle)
+
 try:
     while True:
         pcie_throughput_monitor()

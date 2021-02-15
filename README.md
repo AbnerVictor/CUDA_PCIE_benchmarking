@@ -10,3 +10,8 @@ This project is built to reflect CUDA computation
 
 ---
 
+- Python 3.8
+- numba
+- cudatoolkit
+- PIL
+- matplotlib
