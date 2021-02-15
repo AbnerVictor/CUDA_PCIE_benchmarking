@@ -17,54 +17,57 @@ gpu_selected = 0
 handler = None
 
 sharpness_pref = 0.8
-TPB = (16, 16)
+TPB = (32, 32)
 number_of_streams = 1
 
-TEST_COPY = True
+TEST_FPS = True
+
+TEST_COPY = False
 DUMMY_DATA_SHAPE = [1920, 1080, 850]
 
 ###########################################################################
 
-IN = image_read('test_img_HD.png')
+IN = image_read('test_img_FHD.png', to_float=False)
 
-OUT_cpu = cpu_run(IN, sharpness_pref)
-plt.imshow(OUT_cpu)
-plt.show()
-mpimg.imsave('OUT_cpu.png', OUT_cpu)
+# OUT_cpu = cpu_run(IN, sharpness_pref)
+# plt.imshow(OUT_cpu)
+# plt.show()
+# mpimg.imsave('OUT_cpu.png', OUT_cpu)
 
 OUT_gpu_single_run = gpu_single_run(IN, gpu_selected, sharpness_pref, TPB)
 plt.imshow(OUT_gpu_single_run)
 plt.show()
 mpimg.imsave('OUT_gpu.png', OUT_gpu_single_run)
 
-OUT_gpu_continuous_run_multi_stream = gpu_continuous_run_multi_stream(IN, gpu_selected, sharpness_pref, TPB,
-                                                                      number_of_streams=number_of_streams,
-                                                                      ENABLE_CONTINUOUS_DEVICE_2_HOST=False,
-                                                                      ENABLE_CONTINUOUS_HOST_2_DEVICE=False,
-                                                                      timeout=20, nvml_handler=handler)
 
-plt.imshow(OUT_gpu_continuous_run_multi_stream)
-plt.show()
-mpimg.imsave('OUT_gpu_multi_run.png', OUT_gpu_continuous_run_multi_stream)
+if TEST_FPS:
+    OUT_gpu_continuous_run_multi_stream = gpu_continuous_run_multi_stream_new(IN, gpu_selected, sharpness_pref, TPB,
+                                                                          number_of_streams=number_of_streams,
+                                                                          ENABLE_CONTINUOUS_DEVICE_2_HOST=False,
+                                                                          ENABLE_CONTINUOUS_HOST_2_DEVICE=False,
+                                                                          timeout=10, nvml_handler=handler)
 
+    plt.imshow(OUT_gpu_continuous_run_multi_stream, vmax=255)
+    plt.show()
+    mpimg.imsave('OUT_gpu_multi_run.png', OUT_gpu_continuous_run_multi_stream)
 
-gpu_continuous_run_multi_stream(IN, gpu_selected, sharpness_pref, TPB,
-                                number_of_streams=number_of_streams,
-                                ENABLE_CONTINUOUS_DEVICE_2_HOST=True,
-                                ENABLE_CONTINUOUS_HOST_2_DEVICE=False,
-                                timeout=10, nvml_handler=handler)
+    gpu_continuous_run_multi_stream_new(IN, gpu_selected, sharpness_pref, TPB,
+                                    number_of_streams=number_of_streams,
+                                    ENABLE_CONTINUOUS_DEVICE_2_HOST=False,
+                                    ENABLE_CONTINUOUS_HOST_2_DEVICE=True,
+                                    timeout=10, nvml_handler=handler)
 
-gpu_continuous_run_multi_stream(IN, gpu_selected, sharpness_pref, TPB,
-                                number_of_streams=number_of_streams,
-                                ENABLE_CONTINUOUS_DEVICE_2_HOST=True,
-                                ENABLE_CONTINUOUS_HOST_2_DEVICE=True,
-                                timeout=10, nvml_handler=handler)
+    gpu_continuous_run_multi_stream_new(IN, gpu_selected, sharpness_pref, TPB,
+                                    number_of_streams=number_of_streams,
+                                    ENABLE_CONTINUOUS_DEVICE_2_HOST=True,
+                                    ENABLE_CONTINUOUS_HOST_2_DEVICE=False,
+                                    timeout=10, nvml_handler=handler)
 
-gpu_continuous_run_multi_stream(IN, gpu_selected, sharpness_pref, TPB,
-                                number_of_streams=number_of_streams,
-                                ENABLE_CONTINUOUS_DEVICE_2_HOST=False,
-                                ENABLE_CONTINUOUS_HOST_2_DEVICE=True,
-                                timeout=10, nvml_handler=handler)
+    gpu_continuous_run_multi_stream_new(IN, gpu_selected, sharpness_pref, TPB,
+                                    number_of_streams=number_of_streams,
+                                    ENABLE_CONTINUOUS_DEVICE_2_HOST=True,
+                                    ENABLE_CONTINUOUS_HOST_2_DEVICE=True,
+                                    timeout=10, nvml_handler=handler)
 
 if TEST_COPY:
 

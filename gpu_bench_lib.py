@@ -1,9 +1,11 @@
-from numba import cuda, float32
+from numba import cuda, float32, int8
+import numba
 from pynvml import *
 from PIL import Image
 import numba
 import numpy
 import time
+
 
 ################################################ Algorithm ####################################
 
@@ -54,17 +56,105 @@ def cas_img_gpu(INPUT: numpy.ndarray, OUT: numpy.ndarray, _developMaximum):
                                INPUT[row + 1, col, 2], INPUT[row, col, 2])
 
 
+@cuda.jit()
+def cas_img_gpu_optimized(INPUT: numpy.ndarray, OUT: numpy.ndarray, _developMaximum: float32, offset: int = 0):
+    row, col = cuda.grid(2)
+
+    def cas(w, a, b, c, d, e):
+        res = float32(w * (a + b + c + d) + e) / float32(w * 4 + 1)
+        if res > 255:
+            return numpy.uint8(255)
+        if res < 0:
+            return numpy.uint8(0)
+        return numpy.uint8(res)
+
+    if 0 < row < INPUT.shape[0] - 1 and 0 < col < INPUT.shape[1] - 1:
+
+        min_g = min(INPUT[row - 1, col, 1], INPUT[row, col - 1, 1], INPUT[row, col + 1, 1], INPUT[row + 1, col, 1],
+                    INPUT[row, col, 1])
+        max_g = max(INPUT[row - 1, col, 1], INPUT[row, col - 1, 1], INPUT[row, col + 1, 1], INPUT[row + 1, col, 1],
+                    INPUT[row, col, 1]) + 1
+        d_max_g = 255 - max_g
+
+        if d_max_g < min_g:
+            BAS = float32(d_max_g) / float32(max_g)
+        else:
+            BAS = float32(min_g) / float32(max_g)
+        _w = float32(BAS ** 0.5 * _developMaximum)
+
+        OUT[row + offset, col, 0] = cas(_w, INPUT[row - 1, col, 0], INPUT[row, col - 1, 0], INPUT[row, col + 1, 0],
+                                        INPUT[row + 1, col, 0], INPUT[row, col, 0])
+        OUT[row + offset, col, 1] = cas(_w, INPUT[row - 1, col, 1], INPUT[row, col - 1, 1], INPUT[row, col + 1, 1],
+                                        INPUT[row + 1, col, 1], INPUT[row, col, 1])
+        OUT[row + offset, col, 2] = cas(_w, INPUT[row - 1, col, 2], INPUT[row, col - 1, 2], INPUT[row, col + 1, 2],
+                                        INPUT[row + 1, col, 2], INPUT[row, col, 2])
+
+
+@cuda.jit()
+def cas_img_gpu_optimized_shared_mem(INPUT: numpy.ndarray, OUT: numpy.ndarray, _developMaximum, offset):
+    shared_INPUT = cuda.shared.array((33, 33, 3), dtype=numpy.uint8)  # allocated shared memory
+
+    tx = cuda.threadIdx.x
+    ty = cuda.threadIdx.y
+
+    row, col = cuda.grid(2)
+    # print(tx, ty, row, col)
+
+    def cas(w, a, b, c, d, e):
+        res = float32(w * (a + b + c + d) + e) / float32(w * 4 + 1)
+        if res > 255:
+            return numpy.uint8(255)
+        if res < 0:
+            return numpy.uint8(0)
+        return numpy.uint8(res)
+
+    if 0 <= row < INPUT.shape[0] and 0 <= col < INPUT.shape[1]:
+        shared_INPUT[tx, ty, 0] = INPUT[row, col, 0]
+        shared_INPUT[tx, ty, 1] = INPUT[row, col, 1]
+        shared_INPUT[tx, ty, 2] = INPUT[row, col, 2]
+        cuda.syncthreads()  # waiting for copy to shared mem
+
+    if 0 < row < INPUT.shape[0] - 1 and 0 < col < INPUT.shape[1] - 1:
+
+        min_g = min(shared_INPUT[tx - 1, ty, 1], shared_INPUT[tx, ty - 1, 1], shared_INPUT[tx, ty + 1, 1],
+                    shared_INPUT[tx + 1, ty, 1],
+                    shared_INPUT[tx, ty, 1])
+        max_g = max(shared_INPUT[tx - 1, ty, 1], shared_INPUT[tx, ty - 1, 1], shared_INPUT[tx, ty + 1, 1],
+                    shared_INPUT[tx + 1, ty, 1],
+                    shared_INPUT[tx, ty, 1]) + 1
+        d_max_g = 255 - max_g
+
+        if d_max_g < min_g:
+            BAS = float32(d_max_g) / float32(max_g)
+        else:
+            BAS = float32(min_g) / float32(max_g)
+        _w = float32(BAS ** 0.5 * _developMaximum)
+
+        OUT[row + offset, col, 0] = cas(_w, shared_INPUT[tx - 1, ty, 0], shared_INPUT[tx, ty - 1, 0],
+                                        shared_INPUT[tx, ty + 1, 0], shared_INPUT[tx + 1, ty, 0],
+                                        shared_INPUT[tx, ty, 0])
+        OUT[row + offset, col, 1] = cas(_w, shared_INPUT[tx - 1, ty, 1], shared_INPUT[tx, ty - 1, 1],
+                                        shared_INPUT[tx, ty + 1, 1], shared_INPUT[tx + 1, ty, 1],
+                                        shared_INPUT[tx, ty, 1])
+        OUT[row + offset, col, 2] = cas(_w, shared_INPUT[tx - 1, ty, 2], shared_INPUT[tx, ty - 1, 2],
+                                        shared_INPUT[tx, ty + 1, 2], shared_INPUT[tx + 1, ty, 2],
+                                        shared_INPUT[tx, ty, 2])
+
+
 ################################################ Utility ####################################
 
-def image_read(input_img):
+def image_read(input_img, to_float=True):
     img = numpy.ascontiguousarray(numpy.array(Image.open(input_img))[:, :, :3])
-    IN = img / 255.0  # normalize the image, float64 now
+    h, w, d = img.shape
 
-    h, w, d = IN.shape
+    if to_float:
+        IN = img / 255.0  # normalize the image, float64 now
+        MegaBytes_per_frame = h * w * d * 64 / (8 * 1024 * 1024)
+    else:
+        IN = numpy.array(img, dtype='uint8')
+        MegaBytes_per_frame = h * w * d / (1024 * 1024)
 
     print('read texture:', IN.shape, IN.dtype)
-
-    MegaBytes_per_frame = h * w * d * 64 / (8 * 1024 * 1024)
     print(MegaBytes_per_frame, 'MB of data per raw frame')
     # print(MegaBytes_per_frame * target_FPS, 'MB of data per second')
 
@@ -94,7 +184,7 @@ def cpu_run(IN, sharpness_pref=0.8):
 
 def gpu_single_run(IN, gpu_device_selected=0, sharpness_pref=0.8, TPB=(16, 16)):
     print("\n - Starting in GPU")
-    developMaximum = -0.125 - (sharpness_pref * (0.2 - 0.125))
+    developMaximum = float32(-0.125 - (sharpness_pref * (0.2 - 0.125)))
 
     h, w, d = IN.shape
     BPG = (int(numpy.ceil(h / TPB[0])), int(numpy.ceil(w / TPB[1])))
@@ -105,18 +195,17 @@ def gpu_single_run(IN, gpu_device_selected=0, sharpness_pref=0.8, TPB=(16, 16)):
     # host to device copy
     copy_host_2_device_start = time.time()
     IN_global_mem = cuda.to_device(IN)  # texture
-    devMax_global_mem = cuda.to_device(numpy.array([developMaximum]))
 
-    OUT_global_mem = cuda.device_array((h, w, d), dtype=float)
+    OUT_global_mem = cuda.device_array((h, w, d), dtype='uint8')
     copy_host_2_device_end = time.time()
 
     print('host to device copy time:', copy_host_2_device_end - copy_host_2_device_start)
 
-    cas_img_gpu[BPG, TPB](IN_global_mem, OUT_global_mem, devMax_global_mem)
+    cas_img_gpu_optimized_shared_mem[BPG, TPB](IN_global_mem, OUT_global_mem, developMaximum, 0)
     cuda.synchronize()
 
     gpu_cas_start = time.time()
-    cas_img_gpu[BPG, TPB](IN_global_mem, OUT_global_mem, devMax_global_mem)
+    cas_img_gpu_optimized_shared_mem[BPG, TPB](IN_global_mem, OUT_global_mem, developMaximum, 0)
     cuda.synchronize()
     gpu_cas_end = time.time()
     print('GPU single image CAS time:', gpu_cas_end - gpu_cas_start)
@@ -124,8 +213,6 @@ def gpu_single_run(IN, gpu_device_selected=0, sharpness_pref=0.8, TPB=(16, 16)):
     copy_device_2_host_start = time.time()
     OUT_gpu = OUT_global_mem.copy_to_host()
     copy_device_2_host_end = time.time()
-
-    OUT_gpu = numpy.where(OUT_gpu < 1, numpy.where(OUT_gpu > 0, OUT_gpu, 0.0), 1.0)
     print('device to host copy time:', copy_device_2_host_end - copy_device_2_host_start)
 
     return OUT_gpu
@@ -250,14 +337,14 @@ def gpu_continuous_run_multi_stream(IN, gpu_device_selected=0, sharpness_pref=0.
                 last_time = current_time
                 if nvml_handler is not None:
                     gpu_usage, mem_usage, mem_used = read_utilization(nvml_handler)
-                    mem_used = numpy.round(mem_used/1024/1024, 3)
+                    mem_used = numpy.round(mem_used / 1024 / 1024, 3)
                     print('\rFPS: {}, GPU usage {}%, mem usage {}%, mem used {}MB'
                           .format(fps, gpu_usage, mem_usage, mem_used), end='')
                     avg[1] += gpu_usage
                     avg[2] += mem_usage
                     avg[3] += mem_used
                 else:
-                    print('\rFPS:', fps, end = '')
+                    print('\rFPS:', fps, end='')
                 fps = 0
                 if current_time - init_time > timeout > 1:
                     avg = numpy.round(numpy.array(avg) / (current_time - init_time), 3)
@@ -297,6 +384,106 @@ def gpu_continuous_run_multi_stream(IN, gpu_device_selected=0, sharpness_pref=0.
         pass
 
     return numpy.vstack(OUT_gpu_list)
+
+def gpu_continuous_run_multi_stream_new(IN, gpu_device_selected=0, sharpness_pref=0.8, TPB=(16, 16),
+                                        number_of_streams=5,
+                                        target_FPS=1000, ENABLE_CONTINUOUS_HOST_2_DEVICE=False,
+                                        ENABLE_CONTINUOUS_DEVICE_2_HOST=False, timeout=-1, nvml_handler=None):
+    print("\n=================== Continuous run, multi stream ====================")
+
+    print('ENABLE_CONTINUOUS_HOST_2_DEVICE', ENABLE_CONTINUOUS_HOST_2_DEVICE, 'ENABLE_CONTINUOUS_DEVICE_2_HOST',
+          ENABLE_CONTINUOUS_DEVICE_2_HOST)
+
+    OUT_gpu = None
+
+    developMaximum = float32(-0.125 - (sharpness_pref * (0.2 - 0.125)))
+    h, w, d = IN.shape
+
+    slice_height = int(numpy.floor(h / number_of_streams)) + 2
+    print('stream count:', number_of_streams, 'slice height:', slice_height)
+
+    BPG = (int(numpy.ceil(slice_height / TPB[0])), int(numpy.ceil(w / TPB[1])))
+
+    # Starting in GPU
+    cuda.select_device(gpu_device_selected)
+
+    # print(stream_list)
+    stream_list = []
+    IN_global_mem_list = []
+    OUT_global_mem = cuda.device_array((h, w, d), dtype='uint8')
+
+    # Host to device
+    for i in range(0, number_of_streams):
+        stream_list += [cuda.stream()]
+        slice_start = i * slice_height - 1 if i != 0 else 0
+        if (1 + i) * slice_height < h:
+            slice_end = (1 + i) * slice_height + 1
+        else:
+            slice_end = h
+        IN_global_mem_list += [cuda.to_device(IN[slice_start:slice_end, :, :], stream=stream_list[i])]
+
+    fps = 0
+    avg = [0, 0, 0, 0]
+    last_time = time.time()
+    init_time = last_time
+
+    try:
+        while 1:
+            current_time = time.time()
+            if current_time - last_time < 1.0:
+                if fps >= target_FPS:
+                    continue
+                fps += 1
+                avg[0] += 1
+            else:
+                last_time = current_time
+                if nvml_handler is not None:
+                    gpu_usage, mem_usage, mem_used = read_utilization(nvml_handler)
+                    mem_used = numpy.round(mem_used / 1024 / 1024, 3)
+                    print('\rFPS: {}, GPU usage {}%, mem usage {}%, mem used {}MB'
+                          .format(fps, gpu_usage, mem_usage, mem_used), end='')
+                    avg[1] += gpu_usage
+                    avg[2] += mem_usage
+                    avg[3] += mem_used
+                else:
+                    print('\rFPS:', fps, end='')
+                fps = 0
+                if current_time - init_time > timeout > 1:
+                    avg = numpy.round(numpy.array(avg) / (current_time - init_time), 3)
+                    OUT_gpu = OUT_global_mem.copy_to_host()
+                    raise TimeoutError
+
+            for i in range(0, number_of_streams):
+
+                slice_start = i * slice_height - 1 if i != 0 else 0
+                if (1 + i) * slice_height < h:
+                    slice_end = (1 + i) * slice_height + 1
+                else:
+                    slice_end = h
+
+                # Host to device
+                if ENABLE_CONTINUOUS_HOST_2_DEVICE:
+                    # Host to device
+                    IN_global_mem_list[i] = cuda.to_device(IN[slice_start:slice_end, :, :], stream=stream_list[i])
+
+                # Kernel
+                cas_img_gpu_optimized_shared_mem[BPG, TPB, stream_list[i]](IN_global_mem_list[i], OUT_global_mem, developMaximum,
+                                                                slice_start)
+
+                # Device to host
+                if ENABLE_CONTINUOUS_DEVICE_2_HOST:
+                    OUT_gpu = OUT_global_mem.copy_to_host()
+
+            cuda.synchronize()
+
+    except KeyboardInterrupt:
+        pass
+    except TimeoutError:
+        print('\rAverage FPS: {}, GPU usage {}%, mem usage {}%, mem used {}MB in {}s running time'
+              .format(avg[0], avg[1], avg[2], avg[3], timeout))
+        pass
+
+    return OUT_gpu
 
 
 def run_continuous_copy(DUMMY_DATA_SHAPE=None, target_FPS=1000, ENABLE_CONTINUOUS_DEVICE_2_HOST=True,

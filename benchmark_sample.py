@@ -3,7 +3,7 @@
 """
 https://blog.csdn.net/Chermack/article/details/107296924
 """
-from numba import cuda, float32
+from numba import cuda, float32, uint8
 import numba
 import numpy
 import math
@@ -34,7 +34,7 @@ def matmul_gpu(A, B, C):
 
 @cuda.jit()
 def matmul_shared_mem(A, B, C):
-    sA = cuda.shared.array((TPB, TPB), dtype=float32)
+    sA = cuda.shared.array((32, 32), dtype=float32)
     sB = cuda.shared.array((TPB, TPB), dtype=float32)
     x, y = cuda.grid(2)
 
@@ -57,7 +57,6 @@ if __name__ == '__main__':
 
     print(cuda.gpus)
     cuda.select_device(0)
-
 
     A = numpy.full((TPB * BPG, TPB * BPG), 3, numpy.float)
     B = numpy.full((TPB * BPG, TPB * BPG), 4, numpy.float)
