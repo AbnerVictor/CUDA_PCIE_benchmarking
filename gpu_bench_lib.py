@@ -1,5 +1,5 @@
 from numba import cuda, float32, int8
-import numba
+import math
 from pynvml import *
 from PIL import Image
 import numba
@@ -12,21 +12,30 @@ import time
 @numba.jit(nopython=True)
 def cas_img_cpu(INPUT: numpy.ndarray, OUT: numpy.ndarray, developMaximum):
     h, w, d = INPUT.shape
+    def reformat(IN):
+        for i in range(IN.shape[0]):
+            if IN[i] < 0:
+                IN[i] = numpy.uint8(0)
+            if IN[i] > 255:
+                IN[i] = numpy.uint8(255)
+            else:
+                IN[i] = numpy.uint8(IN[i])
+        return IN
     for row in range(1, int(h) - 1):
         for col in range(1, int(w) - 1):
             window = INPUT[row - 1:row + 2, col - 1:col + 2, :]
             min_g = min(window[0, 1, 1], window[1, 0, 1], window[1, 2, 1], window[2, 1, 1], window[1, 1, 1])
-            max_g = max(window[0, 1, 1], window[1, 0, 1], window[1, 2, 1], window[2, 1, 1], window[1, 1, 1]) + 0.001
+            max_g = max(window[0, 1, 1], window[1, 0, 1], window[1, 2, 1], window[2, 1, 1], window[1, 1, 1]) + 1
             BAS = 0
-            d_max_g = 1 - max_g
+            d_max_g = 255 - max_g
             if d_max_g < min_g:
                 BAS = d_max_g / max_g
             else:
                 BAS = min_g / max_g
             _w = BAS ** 0.5 * developMaximum
-            OUT[row, col, :] = (_w * (window[0, 1, :] + window[1, 0, :] + window[1, 2, :] + window[2, 1, :]) + window[1,
-                                                                                                               1, :]) \
-                               / (_w * 4 + 1)
+            OUT[row, col, :] = \
+                reformat((_w * (window[0, 1, :] + window[1, 0, :] + window[1, 2, :] + window[2, 1, :]) + window[1, 1, :]) / (_w * 4 + 1))
+
 
 
 @cuda.jit()
@@ -173,11 +182,10 @@ def cpu_run(IN, sharpness_pref=0.8):
     print("\n - Starting in CPU")
 
     # Starting in CPU
-    OUT_cpu = numpy.zeros(IN.shape, dtype=float)
+    OUT_cpu = numpy.zeros(IN.shape, dtype=numpy.uint8)
     cpu_start = time.time()
     cas_img_cpu(IN, OUT_cpu, developMaximum)
     cpu_end = time.time()
-    OUT_cpu = numpy.where(OUT_cpu < 1, numpy.where(OUT_cpu > 0, OUT_cpu, 0.0), 1.0)
     print("CPU single image CAS time: " + str(cpu_end - cpu_start))
     return OUT_cpu
 
@@ -498,7 +506,7 @@ def run_continuous_copy(DUMMY_DATA_SHAPE=None, target_FPS=1000, ENABLE_CONTINUOU
 
     print('copy data shape:', DUMMY_DATA_SHAPE, 'size:',
           numpy.round(DUMMY_DATA_SHAPE[0] * DUMMY_DATA_SHAPE[1] * DUMMY_DATA_SHAPE[2] / (1024 * 1024), 3), 'MB/frame')
-    dummy_in_data = numpy.full(DUMMY_DATA_SHAPE, 255, dtype='uint8')
+    dummy_in_data = numpy.full(DUMMY_DATA_SHAPE, 3, dtype='uint8')
     if ENABLE_CONTINUOUS_DEVICE_2_HOST:
         dummy_out_data_global_mem = cuda.device_array(DUMMY_DATA_SHAPE, dtype=numpy.uint8)
 

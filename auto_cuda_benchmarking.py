@@ -17,22 +17,24 @@ gpu_selected = 0
 handler = None
 
 sharpness_pref = 0.8
-TPB = (32, 32)
+TPB = (16, 16)
 number_of_streams = 1
 
 TEST_FPS = True
+timeout1 = 20
 
-TEST_COPY = False
+TEST_COPY = True
 DUMMY_DATA_SHAPE = [1920, 1080, 850]
+timeout2 = 10
 
 ###########################################################################
 
-IN = image_read('test_img_FHD.png', to_float=False)
+IN = image_read('test_img_UHD.png', to_float=False)
 
-# OUT_cpu = cpu_run(IN, sharpness_pref)
-# plt.imshow(OUT_cpu)
-# plt.show()
-# mpimg.imsave('OUT_cpu.png', OUT_cpu)
+OUT_cpu = cpu_run(IN, sharpness_pref)
+plt.imshow(OUT_cpu)
+plt.show()
+mpimg.imsave('OUT_cpu.png', OUT_cpu)
 
 OUT_gpu_single_run = gpu_single_run(IN, gpu_selected, sharpness_pref, TPB)
 plt.imshow(OUT_gpu_single_run)
@@ -45,7 +47,7 @@ if TEST_FPS:
                                                                           number_of_streams=number_of_streams,
                                                                           ENABLE_CONTINUOUS_DEVICE_2_HOST=False,
                                                                           ENABLE_CONTINUOUS_HOST_2_DEVICE=False,
-                                                                          timeout=10, nvml_handler=handler)
+                                                                          timeout=timeout1, nvml_handler=handler)
 
     plt.imshow(OUT_gpu_continuous_run_multi_stream, vmax=255)
     plt.show()
@@ -55,30 +57,31 @@ if TEST_FPS:
                                     number_of_streams=number_of_streams,
                                     ENABLE_CONTINUOUS_DEVICE_2_HOST=False,
                                     ENABLE_CONTINUOUS_HOST_2_DEVICE=True,
-                                    timeout=10, nvml_handler=handler)
+                                    timeout=timeout1, nvml_handler=handler)
 
     gpu_continuous_run_multi_stream_new(IN, gpu_selected, sharpness_pref, TPB,
                                     number_of_streams=number_of_streams,
                                     ENABLE_CONTINUOUS_DEVICE_2_HOST=True,
                                     ENABLE_CONTINUOUS_HOST_2_DEVICE=False,
-                                    timeout=10, nvml_handler=handler)
+                                    timeout=timeout1, nvml_handler=handler)
 
     gpu_continuous_run_multi_stream_new(IN, gpu_selected, sharpness_pref, TPB,
                                     number_of_streams=number_of_streams,
                                     ENABLE_CONTINUOUS_DEVICE_2_HOST=True,
                                     ENABLE_CONTINUOUS_HOST_2_DEVICE=True,
-                                    timeout=10, nvml_handler=handler)
+                                    timeout=timeout1, nvml_handler=handler)
 
 if TEST_COPY:
 
     run_continuous_copy(DUMMY_DATA_SHAPE=DUMMY_DATA_SHAPE,
                         ENABLE_CONTINUOUS_HOST_2_DEVICE=True, ENABLE_CONTINUOUS_DEVICE_2_HOST=False,
-                        timeout=10, nvml_handler=handler)
-
-    run_continuous_copy(DUMMY_DATA_SHAPE=DUMMY_DATA_SHAPE,
-                        ENABLE_CONTINUOUS_HOST_2_DEVICE=True, ENABLE_CONTINUOUS_DEVICE_2_HOST=True,
-                        timeout=10, nvml_handler=handler)
+                        timeout=timeout2, nvml_handler=handler)
 
     run_continuous_copy(DUMMY_DATA_SHAPE=DUMMY_DATA_SHAPE,
                         ENABLE_CONTINUOUS_HOST_2_DEVICE=False, ENABLE_CONTINUOUS_DEVICE_2_HOST=True,
-                        timeout=10, nvml_handler=handler)
+                        timeout=timeout2, nvml_handler=handler)
+
+    run_continuous_copy(DUMMY_DATA_SHAPE=DUMMY_DATA_SHAPE,
+                        ENABLE_CONTINUOUS_HOST_2_DEVICE=True, ENABLE_CONTINUOUS_DEVICE_2_HOST=True,
+                        timeout=timeout2, nvml_handler=handler)
+
