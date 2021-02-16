@@ -1,5 +1,5 @@
 from numba import cuda, float32, int8
-import math
+from multiprocessing import Process
 from pynvml import *
 from PIL import Image
 import numba
@@ -36,8 +36,6 @@ def cas_img_cpu(INPUT: numpy.ndarray, OUT: numpy.ndarray, developMaximum):
             OUT[row, col, :] = \
                 reformat((_w * (window[0, 1, :] + window[1, 0, :] + window[1, 2, :] + window[2, 1, :]) + window[1, 1, :]) / (_w * 4 + 1))
 
-
-
 @cuda.jit()
 def cas_img_gpu(INPUT: numpy.ndarray, OUT: numpy.ndarray, _developMaximum):
     row, col = cuda.grid(2)
@@ -63,7 +61,6 @@ def cas_img_gpu(INPUT: numpy.ndarray, OUT: numpy.ndarray, _developMaximum):
                                INPUT[row + 1, col, 1], INPUT[row, col, 1])
         OUT[row, col, 2] = cas(_w, INPUT[row - 1, col, 2], INPUT[row, col - 1, 2], INPUT[row, col + 1, 2],
                                INPUT[row + 1, col, 2], INPUT[row, col, 2])
-
 
 @cuda.jit()
 def cas_img_gpu_optimized(INPUT: numpy.ndarray, OUT: numpy.ndarray, _developMaximum: float32, offset: int = 0):
@@ -97,7 +94,6 @@ def cas_img_gpu_optimized(INPUT: numpy.ndarray, OUT: numpy.ndarray, _developMaxi
                                         INPUT[row + 1, col, 1], INPUT[row, col, 1])
         OUT[row + offset, col, 2] = cas(_w, INPUT[row - 1, col, 2], INPUT[row, col - 1, 2], INPUT[row, col + 1, 2],
                                         INPUT[row + 1, col, 2], INPUT[row, col, 2])
-
 
 @cuda.jit()
 def cas_img_gpu_optimized_shared_mem(INPUT: numpy.ndarray, OUT: numpy.ndarray, _developMaximum, offset):
@@ -149,8 +145,8 @@ def cas_img_gpu_optimized_shared_mem(INPUT: numpy.ndarray, OUT: numpy.ndarray, _
                                         shared_INPUT[tx, ty + 1, 2], shared_INPUT[tx + 1, ty, 2],
                                         shared_INPUT[tx, ty, 2])
 
-
 ################################################ Utility ####################################
+
 
 def image_read(input_img, to_float=True):
     img = numpy.ascontiguousarray(numpy.array(Image.open(input_img))[:, :, :3])
@@ -197,11 +193,16 @@ def gpu_single_run(IN, gpu_device_selected=0, sharpness_pref=0.8, TPB=(16, 16)):
     h, w, d = IN.shape
     BPG = (int(numpy.ceil(h / TPB[0])), int(numpy.ceil(w / TPB[1])))
 
+    OUT_gpu = numpy.empty((h, w, d), dtype='uint8')
+
     # Starting in GPU
     cuda.select_device(gpu_device_selected)
 
+
     # host to device copy
     copy_host_2_device_start = time.time()
+    # Pin memory
+    cuda.pinned([IN, OUT_gpu])
     IN_global_mem = cuda.to_device(IN)  # texture
 
     OUT_global_mem = cuda.device_array((h, w, d), dtype='uint8')
@@ -219,7 +220,7 @@ def gpu_single_run(IN, gpu_device_selected=0, sharpness_pref=0.8, TPB=(16, 16)):
     print('GPU single image CAS time:', gpu_cas_end - gpu_cas_start)
 
     copy_device_2_host_start = time.time()
-    OUT_gpu = OUT_global_mem.copy_to_host()
+    OUT_global_mem.copy_to_host(OUT_gpu)
     copy_device_2_host_end = time.time()
     print('device to host copy time:', copy_device_2_host_end - copy_device_2_host_start)
 
@@ -402,7 +403,7 @@ def gpu_continuous_run_multi_stream_new(IN, gpu_device_selected=0, sharpness_pre
     print('ENABLE_CONTINUOUS_HOST_2_DEVICE', ENABLE_CONTINUOUS_HOST_2_DEVICE, 'ENABLE_CONTINUOUS_DEVICE_2_HOST',
           ENABLE_CONTINUOUS_DEVICE_2_HOST)
 
-    OUT_gpu = None
+
 
     developMaximum = float32(-0.125 - (sharpness_pref * (0.2 - 0.125)))
     h, w, d = IN.shape
@@ -417,8 +418,13 @@ def gpu_continuous_run_multi_stream_new(IN, gpu_device_selected=0, sharpness_pre
 
     # print(stream_list)
     stream_list = []
+
     IN_global_mem_list = []
+    cuda.pinned(IN)
+
     OUT_global_mem = cuda.device_array((h, w, d), dtype='uint8')
+    OUT_gpu = numpy.empty((h, w, d), dtype=numpy.uint8)
+    cuda.pinned(OUT_gpu)
 
     # Host to device
     for i in range(0, number_of_streams):
@@ -472,17 +478,17 @@ def gpu_continuous_run_multi_stream_new(IN, gpu_device_selected=0, sharpness_pre
                 # Host to device
                 if ENABLE_CONTINUOUS_HOST_2_DEVICE:
                     # Host to device
-                    IN_global_mem_list[i] = cuda.to_device(IN[slice_start:slice_end, :, :], stream=stream_list[i])
+                    cuda.to_device(IN[slice_start:slice_end, :, :], stream=stream_list[i], to=IN_global_mem_list[i])
 
                 # Kernel
                 cas_img_gpu_optimized_shared_mem[BPG, TPB, stream_list[i]](IN_global_mem_list[i], OUT_global_mem, developMaximum,
                                                                 slice_start)
 
-                # Device to host
-                if ENABLE_CONTINUOUS_DEVICE_2_HOST:
-                    OUT_gpu = OUT_global_mem.copy_to_host()
-
             cuda.synchronize()
+
+            # Device to host
+            if ENABLE_CONTINUOUS_DEVICE_2_HOST:
+                OUT_global_mem.copy_to_host(OUT_gpu)
 
     except KeyboardInterrupt:
         pass
@@ -495,7 +501,7 @@ def gpu_continuous_run_multi_stream_new(IN, gpu_device_selected=0, sharpness_pre
 
 
 def run_continuous_copy(DUMMY_DATA_SHAPE=None, target_FPS=1000, ENABLE_CONTINUOUS_DEVICE_2_HOST=True,
-                        ENABLE_CONTINUOUS_HOST_2_DEVICE=False, timeout=-1, nvml_handler=None):
+                        ENABLE_CONTINUOUS_HOST_2_DEVICE=False, timeout=-1):
     if DUMMY_DATA_SHAPE is None:
         DUMMY_DATA_SHAPE = [1920, 1080, 600]
 
@@ -506,9 +512,18 @@ def run_continuous_copy(DUMMY_DATA_SHAPE=None, target_FPS=1000, ENABLE_CONTINUOU
 
     print('copy data shape:', DUMMY_DATA_SHAPE, 'size:',
           numpy.round(DUMMY_DATA_SHAPE[0] * DUMMY_DATA_SHAPE[1] * DUMMY_DATA_SHAPE[2] / (1024 * 1024), 3), 'MB/frame')
-    dummy_in_data = numpy.full(DUMMY_DATA_SHAPE, 3, dtype='uint8')
+
+    if ENABLE_CONTINUOUS_HOST_2_DEVICE:
+        dummy_in_data = numpy.full(DUMMY_DATA_SHAPE, 3, dtype=numpy.uint8)
+        cuda.pinned(dummy_in_data)
+        dummy_in_data_global_mem = cuda.device_array(DUMMY_DATA_SHAPE, dtype=numpy.uint8)
+        h2d_stream = cuda.stream()
+
     if ENABLE_CONTINUOUS_DEVICE_2_HOST:
         dummy_out_data_global_mem = cuda.device_array(DUMMY_DATA_SHAPE, dtype=numpy.uint8)
+        dummy_out_data = numpy.empty(shape=DUMMY_DATA_SHAPE, dtype=numpy.uint8)
+        cuda.pinned(dummy_out_data)
+        d2h_stream = cuda.stream()
 
     fps = 0
     avg = [0, 0, 0, 0]
@@ -525,16 +540,7 @@ def run_continuous_copy(DUMMY_DATA_SHAPE=None, target_FPS=1000, ENABLE_CONTINUOU
                 avg[0] += 1
             else:
                 last_time = current_time
-                if nvml_handler is not None:
-                    gpu_usage, mem_usage, mem_used = read_utilization(nvml_handler)
-                    mem_used = numpy.round(mem_used / 1024 / 1024, 3)
-                    print('\rFPS: {}, GPU usage {}%, mem usage {}%, mem used {}MB'
-                          .format(fps, gpu_usage, mem_usage, mem_used), end='')
-                    avg[1] += gpu_usage
-                    avg[2] += mem_usage
-                    avg[3] += mem_used
-                else:
-                    print('\rFPS:', fps, end='')
+                print('\rFPS:', fps, end='')
                 fps = 0
                 if current_time - init_time > timeout > 1:
                     avg = numpy.round(numpy.array(avg) / (current_time - init_time), 3)
@@ -542,17 +548,84 @@ def run_continuous_copy(DUMMY_DATA_SHAPE=None, target_FPS=1000, ENABLE_CONTINUOU
 
             # Host to device
             if ENABLE_CONTINUOUS_HOST_2_DEVICE:
-                dummy_in_data_global_mem = cuda.to_device(dummy_in_data)
+                cuda.to_device(dummy_in_data, stream=h2d_stream, to=dummy_in_data_global_mem)
 
             # Device to host
             if ENABLE_CONTINUOUS_DEVICE_2_HOST:
-                dummy_out_data = dummy_out_data_global_mem.copy_to_host()
+                dummy_out_data_global_mem.copy_to_host(dummy_out_data, stream=d2h_stream)
 
-            cuda.synchronize()
-
+            # cuda.synchronize()
     except KeyboardInterrupt:
         pass
     except TimeoutError:
-        print('\rAverage FPS: {}, GPU usage {}%, mem usage {}%, mem used {}MB in {}s running time'
-              .format(avg[0], avg[1], avg[2], avg[3], timeout))
+        print('\rAverage FPS: {} in {}s running time'
+              .format(avg[0], timeout))
     pass
+
+def copy(is_h2d=False, is_d2h=False, DUMMY_DATA_SHAPE=None, target_FPS=None, timeout=None):
+    print(cuda.devices.get_context())
+    if is_h2d:
+        dummy_in_data = numpy.full(DUMMY_DATA_SHAPE, 3, dtype=numpy.uint8)
+        cuda.pinned(dummy_in_data)
+        dummy_in_data_global_mem = cuda.device_array(DUMMY_DATA_SHAPE, dtype=numpy.uint8)
+        h2d_stream = cuda.stream()
+
+    if is_d2h:
+        dummy_out_data_global_mem = cuda.to_device(numpy.full(DUMMY_DATA_SHAPE, 3, dtype=numpy.uint8))
+        dummy_out_data = numpy.empty(shape=DUMMY_DATA_SHAPE, dtype=numpy.uint8)
+        cuda.pinned(dummy_out_data)
+        d2h_stream = cuda.stream()
+
+    fps = 0
+    avg = 0
+    last_time = time.time()
+    init_time = last_time
+    try:
+        while 1:
+            current_time = time.time()
+            if current_time - last_time < 1.0:
+                if fps >= target_FPS:
+                    continue
+                fps += 1
+                avg += 1
+            else:
+                last_time = current_time
+                print('\rh2d' if is_h2d else '\rd2h', 'FPS:', fps, end='')
+                fps = 0
+                if current_time - init_time > timeout > 1:
+                    avg = numpy.round(numpy.array(avg) / (current_time - init_time), 3)
+                    raise TimeoutError
+            if is_h2d:
+                cuda.to_device(dummy_in_data, stream=h2d_stream, to=dummy_in_data_global_mem)
+            if is_d2h:
+                dummy_out_data_global_mem.copy_to_host(dummy_out_data, stream=d2h_stream)
+    except TimeoutError:
+        print('\nh2d' if is_h2d else '\nd2h', 'Average FPS: {} in {}s running time'.format(avg, timeout))
+
+
+def run_continuous_copy_new(DUMMY_DATA_SHAPE=None, target_FPS=1000, ENABLE_CONTINUOUS_DEVICE_2_HOST=True,
+                        ENABLE_CONTINUOUS_HOST_2_DEVICE=False, timeout=-1):
+
+    if DUMMY_DATA_SHAPE is None:
+        DUMMY_DATA_SHAPE = [1920, 1080, 600]
+
+    print("\n=================== Continuous copy ====================")
+
+    print('ENABLE_CONTINUOUS_HOST_2_DEVICE', ENABLE_CONTINUOUS_HOST_2_DEVICE, 'ENABLE_CONTINUOUS_DEVICE_2_HOST',
+          ENABLE_CONTINUOUS_DEVICE_2_HOST)
+
+    print('copy data shape:', DUMMY_DATA_SHAPE, 'size:',
+          numpy.round(DUMMY_DATA_SHAPE[0] * DUMMY_DATA_SHAPE[1] * DUMMY_DATA_SHAPE[2] / (1024 * 1024), 3), 'MB/frame')
+
+    if ENABLE_CONTINUOUS_HOST_2_DEVICE:
+        h2d_t = Process(target=copy, args=(True, False, DUMMY_DATA_SHAPE, target_FPS, timeout))
+        h2d_t.start()
+
+    if ENABLE_CONTINUOUS_DEVICE_2_HOST:
+        d2h_t = Process(target=copy, args=(False, True, DUMMY_DATA_SHAPE, target_FPS, timeout))
+        d2h_t.start()
+
+    if ENABLE_CONTINUOUS_HOST_2_DEVICE:
+        h2d_t.join(timeout+2)
+    if ENABLE_CONTINUOUS_DEVICE_2_HOST:
+        d2h_t.join(timeout+2)
