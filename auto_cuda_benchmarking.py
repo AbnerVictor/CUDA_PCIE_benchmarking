@@ -22,16 +22,16 @@ if __name__ == '__main__':
     TPB = (16, 16)
     number_of_streams = 1
 
-    TEST_FPS = True
+    TEST_FPS = False
     timeout1 = 10
 
-    TEST_COPY = False
+    TEST_COPY = True
     DUMMY_DATA_SHAPE = [1920, 1080, 85]
     timeout2 = 10
 
     ###########################################################################
 
-    IN = image_read('test_img_UUHD.png', to_float=False)
+    IN = image_read('test_img_HD.png', to_float=False)
 
     OUT_cpu = cpu_run(IN, sharpness_pref)
     plt.imshow(OUT_cpu)
@@ -76,14 +76,14 @@ if __name__ == '__main__':
     if TEST_COPY:
 
         run_continuous_copy(DUMMY_DATA_SHAPE=DUMMY_DATA_SHAPE,
-                            ENABLE_CONTINUOUS_HOST_2_DEVICE=True, ENABLE_CONTINUOUS_DEVICE_2_HOST=False,
-                            timeout=timeout2)
-
-        run_continuous_copy(DUMMY_DATA_SHAPE=DUMMY_DATA_SHAPE,
                             ENABLE_CONTINUOUS_HOST_2_DEVICE=False, ENABLE_CONTINUOUS_DEVICE_2_HOST=True,
                             timeout=timeout2)
 
-        run_continuous_copy_new(DUMMY_DATA_SHAPE=DUMMY_DATA_SHAPE,
-                            ENABLE_CONTINUOUS_HOST_2_DEVICE=True, ENABLE_CONTINUOUS_DEVICE_2_HOST=True,
-                            timeout=timeout2)
+        # run_continuous_copy(DUMMY_DATA_SHAPE=DUMMY_DATA_SHAPE,
+        #                     ENABLE_CONTINUOUS_HOST_2_DEVICE=False, ENABLE_CONTINUOUS_DEVICE_2_HOST=True,
+        #                     timeout=timeout2)
+        #
+        # run_continuous_copy_new(DUMMY_DATA_SHAPE=DUMMY_DATA_SHAPE,
+        #                     ENABLE_CONTINUOUS_HOST_2_DEVICE=True, ENABLE_CONTINUOUS_DEVICE_2_HOST=True,
+        #                     timeout=timeout2)
 
