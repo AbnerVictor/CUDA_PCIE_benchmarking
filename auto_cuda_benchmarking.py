@@ -28,7 +28,7 @@ if __name__ == '__main__':
     TEST_FPS = False
     timeout1 = 10
 
-    TEST_COPY = True
+    TEST_COPY = False
     DUMMY_DATA_SHAPE = [1920, 1080, 85]
     timeout2 = 10
 

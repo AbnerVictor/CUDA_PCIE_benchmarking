@@ -97,10 +97,10 @@ def cas_img_gpu_optimized(INPUT: numpy.ndarray, OUT: numpy.ndarray, _developMaxi
 
 @cuda.jit()
 def cas_img_gpu_optimized_shared_mem(INPUT: numpy.ndarray, OUT: numpy.ndarray, _developMaximum, offset):
-    shared_INPUT = cuda.shared.array((33, 33, 3), dtype=numpy.uint8)  # allocated shared memory
+    shared_INPUT = cuda.shared.array((34, 34, 3), dtype=numpy.uint8)  # allocated shared memory
 
-    tx = cuda.threadIdx.x
-    ty = cuda.threadIdx.y
+    tx = cuda.threadIdx.x + 1
+    ty = cuda.threadIdx.y + 1
 
     row, col = cuda.grid(2)
     # print(tx, ty, row, col)
@@ -113,11 +113,26 @@ def cas_img_gpu_optimized_shared_mem(INPUT: numpy.ndarray, OUT: numpy.ndarray, _
             return numpy.uint8(0)
         return numpy.uint8(res)
 
+    def copy(shared_x, shared_y, in_x, in_y):
+        shared_INPUT[shared_x, shared_y, 0] = INPUT[in_x, in_y, 0]
+        shared_INPUT[shared_x, shared_y, 1] = INPUT[in_x, in_y, 1]
+        shared_INPUT[shared_x, shared_y, 2] = INPUT[in_x, in_y, 2]
+
     if 0 <= row < INPUT.shape[0] and 0 <= col < INPUT.shape[1]:
-        shared_INPUT[tx, ty, 0] = INPUT[row, col, 0]
-        shared_INPUT[tx, ty, 1] = INPUT[row, col, 1]
-        shared_INPUT[tx, ty, 2] = INPUT[row, col, 2]
-        cuda.syncthreads()  # waiting for copy to shared mem
+        copy(tx, ty, row, col)
+
+    if 0 < row < INPUT.shape[0] - 1 and 0 < col < INPUT.shape[1] - 1:
+        if tx == 1:
+            copy(tx-1, ty, row-1, col)
+        if tx == cuda.blockDim.x:
+            copy(tx+1, ty, row+1, col)
+        if ty == 1:
+            copy(tx, ty-1, row, col-1)
+        if ty == cuda.blockDim.y:
+            copy(tx, ty+1, row, col+1)
+
+    cuda.syncthreads()  # waiting for copy to shared mem
+
 
     if 0 < row < INPUT.shape[0] - 1 and 0 < col < INPUT.shape[1] - 1:
 
@@ -200,7 +215,7 @@ def gpu_single_run(IN:numpy.ndarray, gpu_device_selected=0, sharpness_pref=0.8, 
     end = cuda.event()
 
     h, w, d = IN.shape
-    BPG = (int(numpy.ceil(h / TPB[0])) + 2, int(numpy.ceil(w / TPB[1])) + 2)
+    BPG = (int(numpy.ceil(h / TPB[0])), int(numpy.ceil(w / TPB[1])))
 
     # Starting in GPU
     cuda.select_device(gpu_device_selected)
@@ -321,29 +336,42 @@ def gpu_continuous_run_multi_stream_new(IN, gpu_device_selected=0, sharpness_pre
                 # Host to device
                 if ENABLE_CONTINUOUS_HOST_2_DEVICE:
                     # Host to device
-                    start = time.perf_counter()
+                    # start = time.perf_counter()
+                    start = cuda.event()
+                    start.record()
                     cuda.to_device(IN_SLICE_list[i], stream=stream_list[i], to=IN_global_mem_list[i])
-                    avg[1] += time.perf_counter()-start
+                    end = cuda.event()
+                    end.record()
+                    end.synchronize()
+                    avg[1] += start.elapsed_time(end)
 
                 # Kernel
-                start = time.perf_counter()
+                # start = time.perf_counter()
+                start = cuda.event()
+                start.record()
                 cas_img_gpu_optimized_shared_mem[BPG, TPB, stream_list[i]](IN_global_mem_list[i], OUT_global_mem, developMaximum,
                                                                 slice_start)
-                avg[3] += time.perf_counter() - start
-
-            cuda.synchronize()
+                end = cuda.event()
+                end.record()
+                end.synchronize()
+                avg[3] += start.elapsed_time(end)
 
             # Device to host
             if ENABLE_CONTINUOUS_DEVICE_2_HOST:
-                start = time.perf_counter()
+                # start = time.perf_counter()
+                start = cuda.event()
+                start.record()
                 OUT_global_mem.copy_to_host(OUT_gpu)
-                avg[2] += time.perf_counter() - start
+                end = cuda.event()
+                end.record()
+                end.synchronize()
+                avg[2] += start.elapsed_time(end)
 
     except KeyboardInterrupt:
         pass
     except TimeoutError:
         print('\rAverage FPS: {}, avg process {}ms, avg h2d {}ms, avg d2h {}ms in {}s running time'
-              .format(avg[0], numpy.round(avg[3]*1000, 3), numpy.round(avg[1]*1000, 3), numpy.round(avg[2]*1000, 3), timeout))
+              .format(avg[0], numpy.round(avg[3], 3), numpy.round(avg[1], 3), numpy.round(avg[2], 3), timeout))
         pass
 
     return OUT_gpu
