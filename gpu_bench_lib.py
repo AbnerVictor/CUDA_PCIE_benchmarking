@@ -350,8 +350,10 @@ def run_continuous_copy(DUMMY_DATA_SHAPE=None, gpu_device_selected=0, target_FPS
     print('ENABLE_CONTINUOUS_HOST_2_DEVICE', ENABLE_CONTINUOUS_HOST_2_DEVICE, 'ENABLE_CONTINUOUS_DEVICE_2_HOST',
           ENABLE_CONTINUOUS_DEVICE_2_HOST)
 
+    size = numpy.round(DUMMY_DATA_SHAPE[0] * DUMMY_DATA_SHAPE[1] * DUMMY_DATA_SHAPE[2] / (1024 * 1024), 3)
+
     print('copy data shape:', DUMMY_DATA_SHAPE, 'size:',
-          numpy.round(DUMMY_DATA_SHAPE[0] * DUMMY_DATA_SHAPE[1] * DUMMY_DATA_SHAPE[2] / (1024 * 1024), 3), 'MB/frame')
+          size, 'MB/frame')
 
     if ENABLE_CONTINUOUS_HOST_2_DEVICE:
         dummy_in_data = cuda.pinned_array(shape=DUMMY_DATA_SHAPE, dtype=numpy.uint8)
@@ -396,8 +398,11 @@ def run_continuous_copy(DUMMY_DATA_SHAPE=None, gpu_device_selected=0, target_FPS
     except KeyboardInterrupt:
         pass
     except TimeoutError:
-        print('\rAverage FPS: {}, avg h2d {}ms, avg d2h {}ms in {}s running time'
-              .format(avg[0], numpy.round(avg[1]*1000, 3), numpy.round(avg[2]*1000, 3), timeout))
+        print('\rAverage FPS: {}, avg h2d {}ms, bw {}MB/s, avg d2h {}ms, bw {}MB/s, in {}s running time'
+              .format(avg[0], numpy.round(avg[1]*1000, 3), 
+                      numpy.round(size/avg[1], 3) if avg[1] != 0 else 'inf ',
+                      numpy.round(avg[2]*1000, 3) if avg[2] != 0 else 'inf ',
+                      numpy.round(size/avg[2], 3), timeout))
     return
 
 

@@ -16,10 +16,13 @@ if __name__ == '__main__':
 
     gpu_selected = 0
     # handler = nvmlDeviceGetHandleByIndex(gpu_selected)  # select gpu
+    handle = nvmlDeviceGetHandleByIndex(gpu_selected)  # select gpu
+    print('Current link: x', nvmlDeviceGetCurrPcieLinkWidth(handle), 'gen', nvmlDeviceGetCurrPcieLinkGeneration(handle))
+
     handler = None
 
     sharpness_pref = 0.8
-    TPB = (32, 32)
+    TPB = (16, 16)
     number_of_streams = 1
 
     TEST_FPS = False
