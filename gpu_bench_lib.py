@@ -338,10 +338,12 @@ def gpu_continuous_run_multi_stream_new(IN, gpu_device_selected=0, sharpness_pre
     return OUT_gpu
 
 
-def run_continuous_copy(DUMMY_DATA_SHAPE=None, target_FPS=10000, ENABLE_CONTINUOUS_DEVICE_2_HOST=True,
+def run_continuous_copy(DUMMY_DATA_SHAPE=None, gpu_device_selected=0, target_FPS=10000, ENABLE_CONTINUOUS_DEVICE_2_HOST=True,
                         ENABLE_CONTINUOUS_HOST_2_DEVICE=False, timeout=-1):
     if DUMMY_DATA_SHAPE is None:
         DUMMY_DATA_SHAPE = [1920, 1080, 600]
+
+    cuda.select_device(gpu_device_selected)
 
     print("\n=================== Continuous copy ====================")
 
@@ -399,7 +401,9 @@ def run_continuous_copy(DUMMY_DATA_SHAPE=None, target_FPS=10000, ENABLE_CONTINUO
     return
 
 
-def copy(is_h2d, is_d2h, DUMMY_DATA_SHAPE, timeout):
+def copy(is_h2d, is_d2h, DUMMY_DATA_SHAPE, timeout, gpu_device_selected):
+    cuda.select_device(gpu_device_selected)
+
     dummy_in_data = cuda.pinned_array(shape=DUMMY_DATA_SHAPE, dtype=numpy.uint8)
     dummy_in_data_global_mem = cuda.device_array(DUMMY_DATA_SHAPE, dtype=numpy.uint8)
 
@@ -448,7 +452,7 @@ def copy(is_h2d, is_d2h, DUMMY_DATA_SHAPE, timeout):
     return
 
 
-def run_continuous_copy_bidirect(DUMMY_DATA_SHAPE=None, timeout=-1):
+def run_continuous_copy_bidirect(DUMMY_DATA_SHAPE=None, gpu_device_selected=0, timeout=-1):
     if DUMMY_DATA_SHAPE is None:
         DUMMY_DATA_SHAPE = [1920, 1080, 600]
 
@@ -458,8 +462,8 @@ def run_continuous_copy_bidirect(DUMMY_DATA_SHAPE=None, timeout=-1):
           numpy.round(DUMMY_DATA_SHAPE[0] * DUMMY_DATA_SHAPE[1] * DUMMY_DATA_SHAPE[2] / (1024 * 1024), 3), 'MB/frame')
 
 
-    h2d_t = Process(target=copy, args=(True, False, DUMMY_DATA_SHAPE, timeout))
-    d2h_t = Process(target=copy, args=(False, True, DUMMY_DATA_SHAPE, timeout))
+    h2d_t = Process(target=copy, args=(True, False, DUMMY_DATA_SHAPE, timeout, gpu_device_selected))
+    d2h_t = Process(target=copy, args=(False, True, DUMMY_DATA_SHAPE, timeout, gpu_device_selected))
 
     h2d_t.start()
     d2h_t.start()
