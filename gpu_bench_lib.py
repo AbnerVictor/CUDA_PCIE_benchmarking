@@ -399,10 +399,11 @@ def run_continuous_copy(DUMMY_DATA_SHAPE=None, gpu_device_selected=0, target_FPS
         pass
     except TimeoutError:
         print('\rAverage FPS: {}, avg h2d {}ms, bw {}MB/s, avg d2h {}ms, bw {}MB/s, in {}s running time'
-              .format(avg[0], numpy.round(avg[1]*1000, 3), 
-                      numpy.round(size/avg[1], 3) if avg[1] != 0 else 'inf ',
-                      numpy.round(avg[2]*1000, 3) if avg[2] != 0 else 'inf ',
-                      numpy.round(size/avg[2], 3), timeout))
+              .format(avg[0],
+                      numpy.round(avg[1]*1000, 3),
+                      '0 ' if avg[1] == 0 else numpy.round(size/avg[1], 3),
+                      numpy.round(avg[2]*1000, 3),
+                      '0 ' if avg[2] == 0 else numpy.round(size/avg[2], 3), timeout))
     return
 
 
