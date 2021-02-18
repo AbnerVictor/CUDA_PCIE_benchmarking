@@ -19,7 +19,7 @@ if __name__ == '__main__':
     handler = None
 
     sharpness_pref = 0.8
-    TPB = (16, 16)
+    TPB = (32, 32)
     number_of_streams = 1
 
     TEST_FPS = False
@@ -33,10 +33,10 @@ if __name__ == '__main__':
 
     IN = image_read('test_img_HD.png', to_float=False)
 
-    OUT_cpu = cpu_run(IN, sharpness_pref)
-    plt.imshow(OUT_cpu)
-    plt.show()
-    mpimg.imsave('OUT_cpu.png', OUT_cpu)
+    # OUT_cpu = cpu_run(IN, sharpness_pref)
+    # plt.imshow(OUT_cpu)
+    # plt.show()
+    # mpimg.imsave('OUT_cpu.png', OUT_cpu)
 
     OUT_gpu_single_run = gpu_single_run(IN, gpu_selected, sharpness_pref, TPB)
     plt.imshow(OUT_gpu_single_run)
@@ -76,14 +76,17 @@ if __name__ == '__main__':
     if TEST_COPY:
 
         run_continuous_copy(DUMMY_DATA_SHAPE=DUMMY_DATA_SHAPE,
+                            ENABLE_CONTINUOUS_HOST_2_DEVICE=True, ENABLE_CONTINUOUS_DEVICE_2_HOST=False,
+                            timeout=timeout2)
+
+        run_continuous_copy(DUMMY_DATA_SHAPE=DUMMY_DATA_SHAPE,
                             ENABLE_CONTINUOUS_HOST_2_DEVICE=False, ENABLE_CONTINUOUS_DEVICE_2_HOST=True,
                             timeout=timeout2)
 
-        # run_continuous_copy(DUMMY_DATA_SHAPE=DUMMY_DATA_SHAPE,
-        #                     ENABLE_CONTINUOUS_HOST_2_DEVICE=False, ENABLE_CONTINUOUS_DEVICE_2_HOST=True,
-        #                     timeout=timeout2)
-        #
-        # run_continuous_copy_new(DUMMY_DATA_SHAPE=DUMMY_DATA_SHAPE,
-        #                     ENABLE_CONTINUOUS_HOST_2_DEVICE=True, ENABLE_CONTINUOUS_DEVICE_2_HOST=True,
-        #                     timeout=timeout2)
+        # run_continuous_copy_bidirect(DUMMY_DATA_SHAPE=DUMMY_DATA_SHAPE, timeout=timeout2)
+
+        run_continuous_copy(DUMMY_DATA_SHAPE=DUMMY_DATA_SHAPE,
+                            ENABLE_CONTINUOUS_HOST_2_DEVICE=True, ENABLE_CONTINUOUS_DEVICE_2_HOST=True,
+                            timeout=timeout2)
+
 

@@ -1,5 +1,6 @@
 from numba import cuda, float32, int8
 from multiprocessing import Process
+import ctypes
 from pynvml import *
 from PIL import Image
 import numba
@@ -184,25 +185,33 @@ def cpu_run(IN, sharpness_pref=0.8):
     print("CPU single image CAS time: " + str(cpu_end - cpu_start))
     return OUT_cpu
 
+# Helper function to copy src array to destination using ctypes memmove
+def copy_np_to_pinned_memory_uint8(src, dest):
+    src_ = src.ctypes.data_as(ctypes.POINTER(ctypes.c_uint8))
+    dest_ = dest.ctypes.data_as(ctypes.POINTER(ctypes.c_uint8))
+    sz = src.size * ctypes.sizeof(ctypes.c_uint8)
+    ctypes.memmove(dest_, src_, sz)
 
-def gpu_single_run(IN, gpu_device_selected=0, sharpness_pref=0.8, TPB=(16, 16)):
+def gpu_single_run(IN:numpy.ndarray, gpu_device_selected=0, sharpness_pref=0.8, TPB=(16, 16)):
     print("\n - Starting in GPU")
     developMaximum = float32(-0.125 - (sharpness_pref * (0.2 - 0.125)))
 
     h, w, d = IN.shape
-    BPG = (int(numpy.ceil(h / TPB[0])), int(numpy.ceil(w / TPB[1])))
+    BPG = (int(numpy.ceil(h / TPB[0])) + 2, int(numpy.ceil(w / TPB[1])) + 2)
 
     # Starting in GPU
     cuda.select_device(gpu_device_selected)
 
+    # Pin memory
+    IN_pinned = cuda.pinned_array(shape=(h, w, d), dtype=numpy.uint8)
+    copy_np_to_pinned_memory_uint8(IN, IN_pinned)
+
+    OUT_gpu = cuda.pinned_array(shape=(h, w, d), dtype=numpy.uint8)
+    OUT_global_mem = cuda.to_device(IN_pinned)
+
     # host to device copy
     copy_host_2_device_start = time.perf_counter()
-
-    # Pin memory
-    OUT_gpu = cuda.pinned_array(shape=(h, w, d), dtype=numpy.uint8)
-
-    IN_global_mem = cuda.to_device(IN)  # texture
-    OUT_global_mem = cuda.device_array((h, w, d), dtype='uint8')
+    IN_global_mem = cuda.to_device(IN_pinned)  # texture
     copy_host_2_device_end = time.perf_counter()
 
     print('host to device copy time:', copy_host_2_device_end - copy_host_2_device_start)
@@ -250,9 +259,11 @@ def gpu_continuous_run_multi_stream_new(IN, gpu_device_selected=0, sharpness_pre
 
     IN_global_mem_list = []
 
-    OUT_global_mem = cuda.device_array((h, w, d), dtype='uint8')
-    OUT_gpu = numpy.empty((h, w, d), dtype=numpy.uint8)
-    IN, OUT_gpu = cuda.pinned([IN, OUT_gpu])
+    # Pinned memory
+    IN_SLICE_list = []
+
+    OUT_global_mem = cuda.to_device(IN)
+    OUT_gpu = cuda.pinned_array((h, w, d), dtype=numpy.uint8)
 
     # Host to device
     for i in range(0, number_of_streams):
@@ -262,7 +273,11 @@ def gpu_continuous_run_multi_stream_new(IN, gpu_device_selected=0, sharpness_pre
             slice_end = (1 + i) * slice_height + 1
         else:
             slice_end = h
-        IN_global_mem_list += [cuda.to_device(IN[slice_start:slice_end, :, :], stream=stream_list[i])]
+
+        IN_SLICE_list += [cuda.pinned_array((slice_end - slice_start, w, d), dtype=numpy.uint8)]
+        copy_np_to_pinned_memory_uint8(IN[slice_start:slice_end, :, :], IN_SLICE_list[i])
+
+        IN_global_mem_list += [cuda.to_device(IN_SLICE_list[i])]
 
     fps = 0
     avg = [0, 0, 0, 0]
@@ -279,50 +294,45 @@ def gpu_continuous_run_multi_stream_new(IN, gpu_device_selected=0, sharpness_pre
                 avg[0] += 1
             else:
                 last_time = current_time
-                if nvml_handler is not None:
-                    gpu_usage, mem_usage, mem_used = read_utilization(nvml_handler)
-                    mem_used = numpy.round(mem_used / 1024 / 1024, 3)
-                    print('\rFPS: {}, GPU usage {}%, mem usage {}%, mem used {}MB'
-                          .format(fps, gpu_usage, mem_usage, mem_used), end='')
-                    avg[1] += gpu_usage
-                    avg[2] += mem_usage
-                    avg[3] += mem_used
-                else:
-                    print('\rFPS:', fps, end='')
+                print('\rFPS:', fps, end='')
                 fps = 0
                 if current_time - init_time > timeout > 1:
-                    avg = numpy.round(numpy.array(avg) / (current_time - init_time), 3)
+                    fps_sum = avg[0]
+                    avg = numpy.array(avg)/fps_sum
+                    avg[0] = numpy.round(numpy.array(fps_sum) / (current_time - init_time), 3)
                     OUT_gpu = OUT_global_mem.copy_to_host()
                     raise TimeoutError
 
             for i in range(0, number_of_streams):
 
                 slice_start = i * slice_height - 1 if i != 0 else 0
-                if (1 + i) * slice_height < h:
-                    slice_end = (1 + i) * slice_height + 1
-                else:
-                    slice_end = h
 
                 # Host to device
                 if ENABLE_CONTINUOUS_HOST_2_DEVICE:
                     # Host to device
-                    cuda.to_device(IN[slice_start:slice_end, :, :], stream=stream_list[i], to=IN_global_mem_list[i])
+                    start = time.perf_counter()
+                    cuda.to_device(IN_SLICE_list[i], stream=stream_list[i], to=IN_global_mem_list[i])
+                    avg[1] += time.perf_counter()-start
 
                 # Kernel
+                start = time.perf_counter()
                 cas_img_gpu_optimized_shared_mem[BPG, TPB, stream_list[i]](IN_global_mem_list[i], OUT_global_mem, developMaximum,
                                                                 slice_start)
+                avg[3] += time.perf_counter() - start
 
             cuda.synchronize()
 
             # Device to host
             if ENABLE_CONTINUOUS_DEVICE_2_HOST:
+                start = time.perf_counter()
                 OUT_global_mem.copy_to_host(OUT_gpu)
+                avg[2] += time.perf_counter() - start
 
     except KeyboardInterrupt:
         pass
     except TimeoutError:
-        print('\rAverage FPS: {}, GPU usage {}%, mem usage {}%, mem used {}MB in {}s running time'
-              .format(avg[0], avg[1], avg[2], avg[3], timeout))
+        print('\rAverage FPS: {}, avg process {}ms, avg h2d {}ms, avg d2h {}ms in {}s running time'
+              .format(avg[0], numpy.round(avg[3]*1000, 3), numpy.round(avg[1]*1000, 3), numpy.round(avg[2]*1000, 3), timeout))
         pass
 
     return OUT_gpu
@@ -341,28 +351,22 @@ def run_continuous_copy(DUMMY_DATA_SHAPE=None, target_FPS=10000, ENABLE_CONTINUO
     print('copy data shape:', DUMMY_DATA_SHAPE, 'size:',
           numpy.round(DUMMY_DATA_SHAPE[0] * DUMMY_DATA_SHAPE[1] * DUMMY_DATA_SHAPE[2] / (1024 * 1024), 3), 'MB/frame')
 
-
     if ENABLE_CONTINUOUS_HOST_2_DEVICE:
-        dummy_in_data = numpy.full(DUMMY_DATA_SHAPE, 3, dtype=numpy.uint8)
+        dummy_in_data = cuda.pinned_array(shape=DUMMY_DATA_SHAPE, dtype=numpy.uint8)
         dummy_in_data_global_mem = cuda.device_array(DUMMY_DATA_SHAPE, dtype=numpy.uint8)
-        h2d_stream = cuda.stream()
 
     if ENABLE_CONTINUOUS_DEVICE_2_HOST:
         dummy_out_data_global_mem = cuda.device_array(DUMMY_DATA_SHAPE, dtype=numpy.uint8)
         dummy_out_data = cuda.pinned_array(shape=DUMMY_DATA_SHAPE, dtype=numpy.uint8)
-        d2h_stream = cuda.stream()
 
     fps = 0
     avg = [0, 0, 0, 0]
     last_time = time.perf_counter()
     init_time = last_time
-    # with cuda.pinned(dummy_in_data, dummy_out_data):
     try:
         while 1:
             current_time = time.perf_counter()
             if current_time - last_time < 1.0:
-                # if fps >= target_FPS:
-                #     continue
                 fps += 1
                 avg[0] += 1
             else:
@@ -370,20 +374,96 @@ def run_continuous_copy(DUMMY_DATA_SHAPE=None, target_FPS=10000, ENABLE_CONTINUO
                 print('\rFPS:', fps, end='')
                 fps = 0
                 if current_time - init_time > timeout > 1:
-                    avg = numpy.round(numpy.array(avg) / (current_time - init_time), 3)
+                    fps_sum = avg[0]
+                    avg = numpy.array(avg) / fps_sum
+                    avg[0] = numpy.round(numpy.array(fps_sum) / (current_time - init_time), 3)
                     raise TimeoutError
 
             # Host to device
             if ENABLE_CONTINUOUS_HOST_2_DEVICE:
-                cuda.to_device(dummy_in_data, stream=h2d_stream, to=dummy_in_data_global_mem)
+                start = time.perf_counter()
+                cuda.to_device(dummy_in_data, to=dummy_in_data_global_mem)
+                avg[1] += time.perf_counter() - start
 
             # Device to host
             if ENABLE_CONTINUOUS_DEVICE_2_HOST:
-                dummy_out_data_global_mem.copy_to_host(dummy_out_data, stream=d2h_stream)
+                start = time.perf_counter()
+                dummy_out_data_global_mem.copy_to_host(dummy_out_data)
+                avg[2] += time.perf_counter() - start
             # cuda.synchronize()
     except KeyboardInterrupt:
         pass
     except TimeoutError:
-        print('\rAverage FPS: {} in {}s running time'
-              .format(avg[0], timeout))
+        print('\rAverage FPS: {}, avg h2d {}ms, avg d2h {}ms in {}s running time'
+              .format(avg[0], numpy.round(avg[1]*1000, 3), numpy.round(avg[2]*1000, 3), timeout))
     return
+
+
+def copy(is_h2d, is_d2h, DUMMY_DATA_SHAPE, timeout):
+    dummy_in_data = cuda.pinned_array(shape=DUMMY_DATA_SHAPE, dtype=numpy.uint8)
+    dummy_in_data_global_mem = cuda.device_array(DUMMY_DATA_SHAPE, dtype=numpy.uint8)
+
+    dummy_out_data_global_mem = cuda.device_array(DUMMY_DATA_SHAPE, dtype=numpy.uint8)
+    dummy_out_data = cuda.pinned_array(shape=DUMMY_DATA_SHAPE, dtype=numpy.uint8)
+
+    print(cuda.current_context())
+
+    fps = 0
+    avg = [0, 0, 0, 0]
+    last_time = time.perf_counter()
+    init_time = last_time
+    try:
+        while 1:
+            current_time = time.perf_counter()
+            if current_time - last_time < 1.0:
+                fps += 1
+                avg[0] += 1
+            else:
+                last_time = current_time
+                print('\rFPS:', fps, end='')
+                fps = 0
+                if current_time - init_time > timeout > 1:
+                    fps_sum = avg[0]
+                    avg = numpy.array(avg) / fps_sum
+                    avg[0] = numpy.round(numpy.array(fps_sum) / (current_time - init_time), 3)
+                    raise TimeoutError
+
+            # Host to device
+            if is_h2d:
+                start = time.perf_counter()
+                cuda.to_device(dummy_in_data, to=dummy_in_data_global_mem)
+                avg[1] += time.perf_counter() - start
+            # Device to host
+
+            if is_d2h:
+                start = time.perf_counter()
+                dummy_out_data_global_mem.copy_to_host(dummy_out_data)
+                avg[2] += time.perf_counter() - start
+            # cuda.synchronize()
+    except KeyboardInterrupt:
+        pass
+    except TimeoutError:
+        print('\nAverage FPS: {}, avg h2d {}ms, avg d2h {}ms in {}s running time'
+              .format(avg[0], numpy.round(avg[1] * 1000, 3), numpy.round(avg[2] * 1000, 3), timeout))
+    return
+
+
+def run_continuous_copy_bidirect(DUMMY_DATA_SHAPE=None, timeout=-1):
+    if DUMMY_DATA_SHAPE is None:
+        DUMMY_DATA_SHAPE = [1920, 1080, 600]
+
+    print("\n=================== Continuous copy bi-direction ====================")
+
+    print('copy data shape:', DUMMY_DATA_SHAPE, 'size:',
+          numpy.round(DUMMY_DATA_SHAPE[0] * DUMMY_DATA_SHAPE[1] * DUMMY_DATA_SHAPE[2] / (1024 * 1024), 3), 'MB/frame')
+
+
+    h2d_t = Process(target=copy, args=(True, False, DUMMY_DATA_SHAPE, timeout))
+    d2h_t = Process(target=copy, args=(False, True, DUMMY_DATA_SHAPE, timeout))
+
+    h2d_t.start()
+    d2h_t.start()
+
+    h2d_t.join()
+    d2h_t.join()
+
