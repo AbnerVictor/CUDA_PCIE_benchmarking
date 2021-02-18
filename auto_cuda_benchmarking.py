@@ -29,7 +29,7 @@ if __name__ == '__main__':
     timeout1 = 10
 
     TEST_COPY = True
-    DUMMY_DATA_SHAPE = [1920, 1080, 400]
+    DUMMY_DATA_SHAPE = [1920, 1080, 85]
     timeout2 = 10
 
     ###########################################################################
@@ -86,10 +86,10 @@ if __name__ == '__main__':
                             ENABLE_CONTINUOUS_HOST_2_DEVICE=False, ENABLE_CONTINUOUS_DEVICE_2_HOST=True,
                             timeout=timeout2)
 
-        # run_continuous_copy_bidirect(DUMMY_DATA_SHAPE=DUMMY_DATA_SHAPE, gpu_device_selected=gpu_selected, timeout=timeout2)
+        run_continuous_copy_bidirect(DUMMY_DATA_SHAPE=DUMMY_DATA_SHAPE, gpu_device_selected=gpu_selected, timeout=timeout2)
 
-        run_continuous_copy(DUMMY_DATA_SHAPE=DUMMY_DATA_SHAPE, gpu_device_selected=gpu_selected,
-                            ENABLE_CONTINUOUS_HOST_2_DEVICE=True, ENABLE_CONTINUOUS_DEVICE_2_HOST=True,
-                            timeout=timeout2)
+        # run_continuous_copy(DUMMY_DATA_SHAPE=DUMMY_DATA_SHAPE, gpu_device_selected=gpu_selected,
+        #                     ENABLE_CONTINUOUS_HOST_2_DEVICE=True, ENABLE_CONTINUOUS_DEVICE_2_HOST=True,
+        #                     timeout=timeout2)
 
 
